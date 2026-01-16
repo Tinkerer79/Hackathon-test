@@ -8,16 +8,16 @@ from typing import Dict, Any, List
 
 app = FastAPI(title="Disaster Early Warning API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 AMBEE_KEY = os.getenv("AMBEE_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
+
+STATE_COORDS = {
+    "Assam": (26.2006, 92.9378),
+    "Delhi": (28.6139, 77.2090),
+    "Maharashtra": (19.7515, 75.7139),
+    "Manipur": (24.6633, 93.906
 
 STATE_COORDS = {
     "Assam": (26.2006, 92.9378),
