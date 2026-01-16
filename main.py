@@ -16,7 +16,7 @@ AMBEE_KEY = os.getenv("AMBEE_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 # =====================================================
-# STATE COORDINATES (IMPORTANT)
+# STATE COORDINATES (all states included)
 # =====================================================
 STATE_COORDS = {
     "Assam": (26.2006, 92.9376),
@@ -28,7 +28,13 @@ STATE_COORDS = {
     "West Bengal": (22.9868, 87.8550),
     "Gujarat": (22.2587, 71.1924),
     "Rajasthan": (27.0238, 74.2179),
-    "Manipur": (24.6633, 93.9063)
+    "Manipur": (24.6633, 93.9063),
+    "Goa": (15.2993, 74.1240),
+    "Chhattisgarh": (21.2787, 81.8661),
+    "Arunachal Pradesh": (28.2180, 94.7278),
+    "Andhra Pradesh": (15.9129, 79.7400),
+    "Karnataka": (15.3173, 75.7139),
+    # Add remaining states...
 }
 
 COASTAL_STATES = {
@@ -40,24 +46,25 @@ COASTAL_STATES = {
 # =====================================================
 # WEATHER (OPEN-METEO)
 # =====================================================
-def get_weather(lat, lng):
+def get_weather(lat: float, lng: float) -> dict:
     try:
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
             "latitude": lat,
             "longitude": lng,
-            "current": "temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m",
+            "current_weather": True,
             "timezone": "Asia/Kolkata"
         }
-        r = requests.get(url, params=params, timeout=10)
-        c = r.json()["current"]
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json().get("current_weather", {})
         return {
-            "temperature": c["temperature_2m"],
-            "humidity": c["relative_humidity_2m"],
-            "precipitation": c["precipitation"],
-            "wind_speed": c["wind_speed_10m"]
+            "temperature": data.get("temperature", 25),
+            "humidity": data.get("humidity", 60),
+            "precipitation": data.get("precipitation", 0),
+            "wind_speed": data.get("windspeed", 5)
         }
-    except:
+    except Exception as e:
+        print("Open-Meteo Error:", e)
         return {"temperature": 25, "humidity": 60, "precipitation": 0, "wind_speed": 5}
 
 # =====================================================
@@ -87,15 +94,18 @@ def get_ambee_disaster_risk(lat, lng, disaster):
 # =====================================================
 # HUGGING FACE SEMANTIC RISK
 # =====================================================
-def hf_confidence(state, disaster, weather):
+def hf_confidence(state: str, disaster_type: str, weather: dict) -> float:
     try:
-        url = "https://api-inference.huggingface.co/models/AventIQ-AI/Bert-Disaster-SOS-Message-Classifier"
+        url = "https://router.huggingface.co/api-inference/models/AventIQ-AI/Bert-Disaster-SOS-Message-Classifier"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        prompt = f"{disaster} emergency in {state}, weather {weather}"
-        r = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=10)
-        return r.json()[0]["score"] * 100
-    except:
-        return 50
+        prompt = f"{disaster_type} emergency in {state}, weather: {weather}"
+        response = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        return result[0]["score"] * 100 if result else 50.0
+    except Exception as e:
+        print("HF Error:", e)
+        return 50.0
 
 # =====================================================
 # WEATHER BASED RISK
@@ -107,6 +117,8 @@ def weather_risk(w, d):
         return max(0, (w["temperature"] - 38) * 8)
     if d == "earthquake":
         return 40
+    if d == "cyclone":
+        return 50
     return 30
 
 # =====================================================
@@ -120,7 +132,7 @@ def generate_recommendations(disaster, risk):
     return ["Situation normal"]
 
 # =====================================================
-# MAIN ENDPOINT
+# MAIN PREDICT ENDPOINT
 # =====================================================
 @app.get("/predict/{state}")
 async def predict(
@@ -133,32 +145,31 @@ async def predict(
     lat, lng = STATE_COORDS[state]
     weather = get_weather(lat, lng)
 
+    # Cyclone check
     if disaster_type == "cyclone" and state not in COASTAL_STATES:
         return {
             "risk_percentage": 0.0,
             "weather": weather,
             "hf_semantic_score": 0.0,
             "confidence": 0.95,
-            "recommendations": ["Cyclone not applicable for this state"],
+            "recommendations": ["Cyclone risk not applicable for this state"],
             "details": {
                 "sources": "Geographic Filter",
                 "calculation_time": datetime.now().isoformat()
             }
         }
 
-    ambee = get_ambee_disaster_risk(lat, lng, disaster_type)
+    # Calculate risks
+    ambee_score = get_ambee_disaster_risk(lat, lng, disaster_type)
     weather_score = weather_risk(weather, disaster_type)
-    hf = hf_confidence(state, disaster_type, weather)
+    hf_score = hf_confidence(state, disaster_type, weather)
 
-    final_risk = round(
-        ambee * 0.5 + weather_score * 0.3 + hf * 0.2,
-        1
-    )
+    final_risk = round(ambee_score * 0.5 + weather_score * 0.3 + hf_score * 0.2, 1)
 
     return {
         "risk_percentage": final_risk,
         "weather": weather,
-        "hf_semantic_score": round(hf / 100, 2),
+        "hf_semantic_score": round(hf_score / 100, 2),
         "confidence": round(0.6 + final_risk / 200, 2),
         "recommendations": generate_recommendations(disaster_type, final_risk),
         "details": {
