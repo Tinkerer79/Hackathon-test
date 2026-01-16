@@ -11,8 +11,8 @@ CORS(app)
 # ============================================
 # CONFIGURATION
 # ============================================
-AMBEE_API_KEY = "ABQEa1f0d59c1c11e8a3b5b6c7d8e9f0a1b2c3d4e"
-HF_API_TOKEN = "hf_YOUR_TOKEN_HERE"
+AMBEE_KEY = os.getenv("AMBEE_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
 OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
 
 # ALL INDIAN STATES
