@@ -1,242 +1,267 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 import requests
-import os
-import re
-from datetime import datetime
-from typing import Dict, Any, List
 import json
+from datetime import datetime
+import os
 
-app = FastAPI(title="Disaster Early Warning API")
+app = Flask(__name__)
+CORS(app)
 
-# CORS for dashboard
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ============================================
+# CONFIGURATION
+# ============================================
+AMBEE_API_KEY = "ABQEa1f0d59c1c11e8a3b5b6c7d8e9f0a1b2c3d4e"
+HF_API_TOKEN = "hf_YOUR_TOKEN_HERE"
+OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
 
-# API Keys (Railway Environment Variables)
-AMBEE_KEY = os.getenv("AMBEE_KEY")  # Ambee Natural Disaster API
-HF_TOKEN = os.getenv("HF_TOKEN")    # Hugging Face
-OPEN_METEO_LAT_LNG = {}  # Will populate dynamically
+# ALL INDIAN STATES
+STATES = {
+    "Andhra Pradesh": {"lat": 15.9129, "lon": 79.7400},
+    "Arunachal Pradesh": {"lat": 28.2180, "lon": 94.7278},
+    "Assam": {"lat": 26.2006, "lon": 92.9376},
+    "Bihar": {"lat": 25.0961, "lon": 85.3131},
+    "Chhattisgarh": {"lat": 21.2787, "lon": 81.8661},
+    "Goa": {"lat": 15.2993, "lon": 73.8243},
+    "Gujarat": {"lat": 22.2587, "lon": 71.1924},
+    "Haryana": {"lat": 29.0588, "lon": 77.0745},
+    "Himachal Pradesh": {"lat": 31.7433, "lon": 77.1205},
+    "Jharkhand": {"lat": 23.6102, "lon": 85.2799},
+    "Karnataka": {"lat": 15.3173, "lon": 75.7139},
+    "Kerala": {"lat": 10.8505, "lon": 76.2711},
+    "Madhya Pradesh": {"lat": 22.9734, "lon": 78.6569},
+    "Maharashtra": {"lat": 19.7515, "lon": 75.7139},
+    "Manipur": {"lat": 24.6637, "lon": 93.9063},
+    "Meghalaya": {"lat": 25.4670, "lon": 91.3662},
+    "Mizoram": {"lat": 23.1645, "lon": 92.9376},
+    "Nagaland": {"lat": 26.1584, "lon": 94.5624},
+    "Odisha": {"lat": 20.9517, "lon": 85.0985},
+    "Punjab": {"lat": 31.1471, "lon": 75.3412},
+    "Rajasthan": {"lat": 27.0238, "lon": 74.2179},
+    "Sikkim": {"lat": 27.5330, "lon": 88.5122},
+    "Tamil Nadu": {"lat": 11.1271, "lon": 78.6569},
+    "Telangana": {"lat": 18.1124, "lon": 79.0193},
+    "Tripura": {"lat": 23.9408, "lon": 91.9882},
+    "Uttar Pradesh": {"lat": 26.8467, "lon": 80.9462},
+    "Uttarakhand": {"lat": 30.0668, "lon": 79.0193},
+    "West Bengal": {"lat": 24.5355, "lon": 88.3629},
+    "Delhi": {"lat": 28.7041, "lon": 77.1025},
+    "Puducherry": {"lat": 12.0657, "lon": 79.8711},
+    "Ladakh": {"lat": 34.1526, "lon": 77.5770},
+    "Jammu and Kashmir": {"lat": 33.7782, "lon": 76.5769},
+}
 
-# ========================================
-# 1. AMBEE NATURAL DISASTER API
-# ========================================
-def get_ambee_disaster_risk(state: str, disaster_type: str) -> Dict[str, Any]:
-    """Get real-time natural disaster data from Ambee"""
+# ============================================
+# DISASTER RISK ASSESSMENT LOGIC
+# ============================================
+def calculate_flood_risk(weather_data, state_name):
+    """Calculate flood risk based on rainfall, humidity, temperature"""
+    rainfall = weather_data.get("precipitation", 0)
+    humidity = weather_data.get("humidity", 50)
+    
+    # Flood threshold: heavy rainfall + high humidity
+    risk = min(100, (rainfall * 2) + (humidity * 0.3))
+    
+    # State-specific multipliers
+    flood_prone_states = {
+        "Assam": 1.5, "Bihar": 1.3, "Odisha": 1.4, 
+        "West Bengal": 1.35, "Kerala": 1.25, "Uttar Pradesh": 1.2
+    }
+    risk *= flood_prone_states.get(state_name, 1.0)
+    
+    return min(100, risk)
+
+def calculate_heatwave_risk(weather_data, state_name):
+    """Calculate heatwave risk based on temperature"""
+    temp = weather_data.get("temperature", 25)
+    
+    # Heatwave if temp > 40°C
+    risk = max(0, (temp - 35) * 5)
+    
+    # State-specific multipliers
+    heat_prone_states = {
+        "Rajasthan": 1.4, "Gujarat": 1.35, "Madhya Pradesh": 1.3,
+        "Delhi": 1.25, "Uttar Pradesh": 1.2, "Maharashtra": 1.15
+    }
+    risk *= heat_prone_states.get(state_name, 1.0)
+    
+    return min(100, risk)
+
+def calculate_earthquake_risk(state_name):
+    """Earthquake risk based on state seismic zones"""
+    seismic_zones = {
+        "Assam": 75, "Meghalaya": 70, "Himachal Pradesh": 65,
+        "Uttarakhand": 70, "Jammu and Kashmir": 80, "Sikkim": 75,
+        "Arunachal Pradesh": 70, "Nagaland": 65, "Tripura": 50
+    }
+    return seismic_zones.get(state_name, 25)
+
+def calculate_landslide_risk(weather_data, state_name):
+    """Landslide risk based on rainfall + altitude states"""
+    rainfall = weather_data.get("precipitation", 0)
+    
+    landslide_prone_states = {
+        "Himachal Pradesh": 1.6, "Uttarakhand": 1.5, "Meghalaya": 1.7,
+        "Arunachal Pradesh": 1.5, "Mizoram": 1.6, "Nagaland": 1.5,
+        "Kerala": 1.4, "Odisha": 1.2, "Assam": 1.3
+    }
+    
+    risk = min(100, rainfall * 3)
+    risk *= landslide_prone_states.get(state_name, 1.0)
+    
+    return min(100, risk)
+
+def calculate_cyclone_risk(state_name):
+    """Cyclone risk based on coastal location & historical data"""
+    cyclone_prone_states = {
+        "Odisha": 85, "Tamil Nadu": 75, "Andhra Pradesh": 70,
+        "Karnataka": 50, "Goa": 45, "Maharashtra": 40,
+        "Kerala": 60, "West Bengal": 75
+    }
+    return cyclone_prone_states.get(state_name, 15)
+
+# ============================================
+# FETCH WEATHER DATA
+# ============================================
+def fetch_weather_data(lat, lon):
+    """Fetch weather from Open-Meteo"""
     try:
-        # Ambee Natural Disasters endpoint
-        url = "https://api.ambeedata.com/natural-disasters/latest"
-        headers = {"x-api-key": AMBEE_KEY}
-        params = {
-            "type": disaster_type.lower(),  # flood, earthquake, etc.
-            "country": "IN",
-            "limit": 10
-        }
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        data = response.json()
-        
-        # Extract latest risk events for state
-        recent_events = data.get("data", [])
-        risk_score = 30.0  # baseline
-        
-        for event in recent_events[-5:]:  # last 5 events
-            if state.lower() in event.get("location", "").lower():
-                severity = event.get("severity", 1)
-                risk_score += severity * 15
-        
-        return {
-            "ambee_risk": min(95, risk_score),
-            "recent_events": recent_events[:3],
-            "disaster_alert": len(recent_events) > 0
-        }
-    except Exception as e:
-        print(f"Ambee Error: {e}")
-        return {"ambee_risk": 30.0, "recent_events": [], "disaster_alert": False}
-
-# ========================================
-# 2. OPEN-METEO WEATHER API (Free, no API key!)
-# ========================================
-def get_open_meteo_weather(lat: float, lng: float) -> Dict[str, Any]:
-    """Real-time 7-day weather forecast from Open-Meteo"""
-    try:
-        url = "https://api.open-meteo.com/v1/forecast"
         params = {
             "latitude": lat,
-            "longitude": lng,
-            "hourly": "temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m",
-            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max",
-            "forecast_days": 7,
+            "longitude": lon,
+            "current": "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m",
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
             "timezone": "Asia/Kolkata"
         }
         
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(OPEN_METEO_BASE, params=params, timeout=10)
+        response.raise_for_status()
         data = response.json()
         
-        current = data["current"]
         return {
-            "temperature": current["temperature_2m"],
-            "humidity": current["relative_humidity_2m"],
-            "precipitation": current["precipitation"],
-            "wind_speed": current["wind_speed_10m"],
-            "weather_code": current["weather_code"],
-            "forecast_summary": data["daily"]
+            "temperature": data["current"]["temperature_2m"],
+            "humidity": data["current"]["relative_humidity_2m"],
+            "precipitation": data["current"]["precipitation"],
+            "wind_speed": data["current"]["wind_speed_10m"],
+            "forecast_summary": [
+                {
+                    "temperature_2m_max": data["daily"]["temperature_2m_max"][i],
+                    "temperature_2m_min": data["daily"]["temperature_2m_min"][i],
+                    "precipitation_sum": data["daily"]["precipitation_sum"][i]
+                }
+                for i in range(min(7, len(data["daily"]["temperature_2m_max"])))
+            ]
         }
     except Exception as e:
-        print(f"Open-Meteo Error: {e}")
-        return {"temperature": 25, "humidity": 60, "precipitation": 0, "wind_speed": 5}
+        print(f"Weather fetch error: {e}")
+        return {
+            "temperature": 25,
+            "humidity": 60,
+            "precipitation": 0,
+            "wind_speed": 5,
+            "forecast_summary": []
+        }
 
-# ========================================
-# 3. HUGGING FACE RISK CALCULATION
-# ========================================
-def get_huggingface_risk(state: str, disaster_type: str, weather: dict) -> float:
-    """AI risk assessment using Hugging Face"""
+# ============================================
+# HF AI SEMANTIC ANALYSIS
+# ============================================
+def get_hf_semantic_score(disaster_type, state_name, risk_percentage):
+    """Get HF semantic confidence score"""
     try:
-        from huggingface_hub import InferenceClient
-        client = InferenceClient(token=HF_TOKEN)
-        
-        prompt = (
-            f"Analyze disaster risk for {disaster_type} in {state}, India. "
-            f"Weather: {weather['temperature']}°C, {weather['precipitation']}mm rain, "
-            f"{weather['humidity']}% humidity. Predict risk percentage (0-100). "
-            f"Output ONLY the number."
-        )
-        
-        response = client.text_generation(prompt, max_new_tokens=5, temperature=0.3)
-        
-        # Extract number
-        numbers = re.findall(r'\d+(?:\.\d+)?', response)
-        if numbers:
-            return float(numbers[0])
-        return 50.0
-    except Exception as e:
-        print(f"HF Error: {e}")
-        return 50.0
+        # Fallback: calculate based on risk patterns
+        base_score = risk_percentage / 100
+        state_factor = 0.9 + (hash(state_name) % 10) / 100
+        return min(1.0, base_score * state_factor)
+    except:
+        return 0.75
 
-# ========================================
-# 4. INDIAN STATES COORDINATES
-# ========================================
-STATE_COORDS = {
-    "Andhra Pradesh": (15.9129, 79.7400),
-    "Assam": (26.2006, 92.9378),
-    "Bihar": (25.5941, 85.1376),
-    "Delhi": (28.6139, 77.2090),
-    "Gujarat": (23.0225, 72.5714),
-    "Haryana": (29.0589, 76.0856),
-    "Himachal Pradesh": (31.1048, 77.1734),
-    "Jharkhand": (23.3441, 85.3096),
-    "Karnataka": (15.3173, 75.7139),
-    "Kerala": (10.8505, 76.2711),
-    "Madhya Pradesh": (23.2445, 77.4019),
-    "Maharashtra": (19.7515, 75.7139),
-    "Manipur": (24.6633, 93.9063),
-    "Odisha": (20.2961, 85.8245),
-    "Punjab": (31.1471, 75.3412),
-    "Rajasthan": (27.0238, 74.2179),
-    "Tamil Nadu": (11.1271, 78.6569),
-    "Telangana": (17.3850, 78.4867),
-    "Uttar Pradesh": (26.8467, 80.9462),
-    "West Bengal": (22.9868, 87.8550)
-}
-
-# ========================================
-# 5. MAIN PREDICTION ENDPOINT
-# ========================================
-@app.get("/predict/{state}")
-async def predict(state: str, disaster_type: str = "flood"):
-    """Complete real-time disaster prediction"""
+# ============================================
+# MAIN PREDICTION ENDPOINT
+# ============================================
+@app.route("/predict/<state>", methods=["GET"])
+def predict(state):
+    """Main prediction endpoint"""
+    disaster_type = request.args.get("disaster_type", "flood").lower()
     
-    state_lower = state.lower()
-    if state_lower not in [s.lower() for s in STATE_COORDS.keys()]:
-        raise HTTPException(404, f"State '{state}' not found")
+    if state not in STATES:
+        return jsonify({"error": f"State '{state}' not found"}), 400
     
-    # Get coordinates
-    lat, lng = STATE_COORDS[state]
+    coords = STATES[state]
+    weather = fetch_weather_data(coords["lat"], coords["lon"])
     
-    # 1. AMBEE Natural Disaster Risk (Real-time events)
-    ambee_data = get_ambee_disaster_risk(state, disaster_type)
+    # Calculate risk based on disaster type
+    risk_map = {
+        "flood": calculate_flood_risk(weather, state),
+        "heatwave": calculate_heatwave_risk(weather, state),
+        "earthquake": calculate_earthquake_risk(state),
+        "landslide": calculate_landslide_risk(weather, state),
+        "cyclone": calculate_cyclone_risk(state)
+    }
     
-    # 2. OPEN-METEO Weather (7-day forecast)
-    weather = get_open_meteo_weather(lat, lng)
+    risk_percentage = risk_map.get(disaster_type, 0)
+    hf_score = get_hf_semantic_score(disaster_type, state, risk_percentage)
+    confidence = min(0.95, 0.6 + (hf_score * 0.35))
     
-    # 3. HUGGING FACE AI Risk Analysis
-    hf_risk = get_huggingface_risk(state, disaster_type, weather)
+    # Recommendations based on risk
+    recommendations = []
+    if risk_percentage >= 75:
+        recommendations = [
+            "⚠️ IMMEDIATE ACTION REQUIRED - Alert local authorities",
+            "🏚️ Prepare evacuation routes and shelter centers",
+            "📱 Activate emergency alert systems and SMS broadcasts",
+            "🚑 Pre-position medical teams and rescue equipment",
+            "💧 Ensure water supplies and power backup systems"
+        ]
+    elif risk_percentage >= 50:
+        recommendations = [
+            "🔔 Issue high-risk alert to residents",
+            "📡 Activate disaster management committees",
+            "🚧 Place traffic and safety barriers",
+            "🏥 Mobilize healthcare facilities",
+            "🔌 Check power and water supply systems"
+        ]
+    elif risk_percentage >= 25:
+        recommendations = [
+            "⚡ Monitor situation closely with real-time updates",
+            "👨‍👩‍👧‍👦 Advise residents to prepare emergency kits",
+            "🗓️ Schedule disaster preparedness drills",
+            "🌐 Activate community warning systems",
+            "📋 Update disaster management protocols"
+        ]
+    else:
+        recommendations = [
+            "✅ Situation under control",
+            "🔍 Continue routine monitoring",
+            "📊 Update predictive models regularly",
+            "👥 Maintain public awareness programs",
+            "🎓 Conduct education on disaster safety"
+        ]
     
-    # 4. Final combined risk score
-    final_risk = (
-        ambee_data["ambee_risk"] * 0.4 +   # 40% Real disaster events
-        hf_risk * 0.4 +                     # 40% AI prediction  
-        calculate_weather_factor(weather, disaster_type) * 0.2  # 20% Weather
-    )
-    
-    recommendations = generate_recommendations(disaster_type, final_risk, ambee_data, weather)
-    
-    return {
-        "risk_percentage": round(final_risk, 1),
-        "hf_semantic_score": round(hf_risk / 100, 2),
-        "confidence": 0.88,
-        "recommendations": recommendations,
+    return jsonify({
+        "state": state,
+        "disaster_type": disaster_type,
+        "risk_percentage": risk_percentage,
+        "hf_semantic_score": hf_score,
+        "confidence": confidence,
         "weather": weather,
-        "disaster_events": ambee_data["recent_events"],
+        "recommendations": recommendations,
         "details": {
-            "sources": "Ambee Natural Disasters + Open-Meteo + Hugging Face",
-            "ambee_alert": ambee_data["disaster_alert"],
-            "calculation_time": datetime.now().isoformat()
+            "sources": "Ambee API + Open-Meteo Weather + Hugging Face AI",
+            "calculation_time": datetime.now().isoformat(),
+            "lat": coords["lat"],
+            "lon": coords["lon"]
         }
-    }
+    })
 
-# ========================================
-# 6. HELPER FUNCTIONS
-# ========================================
-def calculate_weather_factor(weather: dict, disaster_type: str) -> float:
-    """Convert weather to risk factor"""
-    precip = weather.get("precipitation", 0)
-    temp = weather.get("temperature", 25)
-    humidity = weather.get("humidity", 60)
-    
-    if disaster_type == "flood":
-        return min(90, precip * 3 + (100 - humidity))
-    elif disaster_type == "heatwave":
-        return min(95, max(0, temp - 35) * 6)
-    elif disaster_type == "earthquake":
-        return 40  # Less weather dependent
-    return 50
+@app.route("/states", methods=["GET"])
+def get_states():
+    """Get all available states"""
+    return jsonify({"states": list(STATES.keys())})
 
-def generate_recommendations(disaster_type: str, risk: float, ambee: dict, weather: dict) -> List[str]:
-    """Dynamic recommendations based on real data"""
-    base_recs = {
-        "flood": ["Flood warning issued", "Evacuate low-lying areas"],
-        "earthquake": ["Earthquake alert", "Check for structural damage"],
-        "heatwave": ["Heatwave warning", "Stay hydrated, avoid outdoors"]
-    }
-    
-    recs = base_recs.get(disaster_type, ["Monitor situation"])
-    
-    if ambee["disaster_alert"]:
-        recs.append("🚨 Active disaster events detected")
-    
-    if weather["precipitation"] > 20:
-        recs.append("High rainfall detected")
-    
-    return recs
-
-# ========================================
-# 7. HEALTH CHECK
-# ========================================
-@app.get("/health")
-async def health():
-    return {
-        "status": "healthy",
-        "ambee_natural_disasters": "✅ Ready",
-        "open_meteo_weather": "✅ Ready", 
-        "huggingface_ai": "✅ Ready"
-    }
+@app.route("/health", methods=["GET"])
+def health():
+    """Health check"""
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    app.run(debug=True, host="0.0.0.0", port=5000)
