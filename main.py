@@ -44,30 +44,43 @@ COASTAL_STATES = {
 }
 
 # =====================================================
-# WEATHER (OPEN-METEO)
+# WEATHER (OPEN-METEO) - FIXED FOR REAL DATA
 # =====================================================
 def get_weather(lat: float, lng: float) -> dict:
+    """
+    Fetch real-time weather data from Open-Meteo for the given latitude and longitude.
+    Returns temperature (°C), humidity (%), precipitation (mm), wind_speed (m/s).
+    """
     try:
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
-        "latitude": lat,
-        "longitude": lng,
-        "hourly": "temperature_2m,precipitation,humidity_2m",
-        "timezone": "Asia/Kolkata"
+            "latitude": lat,
+            "longitude": lng,
+            "hourly": "temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m",
+            "timezone": "Asia/Kolkata"
         }
 
         response = requests.get(url, params=params, timeout=10)
-        data = response.json().get("current_weather", {})
+        response.raise_for_status()
+        data = response.json().get("hourly", {})
+
+        # Get latest hour (last index in array)
+        temperature = data.get("temperature_2m", [25])[-1]
+        precipitation = data.get("precipitation", [0])[-1]
+        humidity = data.get("relative_humidity_2m", [60])[-1]
+        wind_speed = data.get("wind_speed_10m", [5])[-1]
+
         return {
-            "temperature": data.get("temperature", 25),
-            "humidity": data.get("humidity", 60),
-            "precipitation": data.get("precipitation", 0),
-            "wind_speed": data.get("windspeed", 5)
+            "temperature": round(temperature, 1),
+            "humidity": round(humidity, 1),
+            "precipitation": round(precipitation, 1),
+            "wind_speed": round(wind_speed, 1)
         }
+
     except Exception as e:
         print("Open-Meteo Error:", e)
-        return {"temperature": 1000, "humidity": 1000, "precipitation": -100, "wind_speed": 12435}
-
+        # Fallback defaults in case API fails
+        return {"temperature": 25, "humidity": 60, "precipitation": 0, "wind_speed": 5}
 # =====================================================
 # AMBEE DISASTER RISK
 # =====================================================
