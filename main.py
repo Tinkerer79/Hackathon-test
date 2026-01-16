@@ -50,11 +50,12 @@ def get_weather(lat: float, lng: float) -> dict:
     try:
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
-            "latitude": lat,
-            "longitude": lng,
-            "current_weather": True,
-            "timezone": "Asia/Kolkata"
+        "latitude": lat,
+        "longitude": lng,
+        "hourly": "temperature_2m,precipitation,humidity_2m",
+        "timezone": "Asia/Kolkata"
         }
+
         response = requests.get(url, params=params, timeout=10)
         data = response.json().get("current_weather", {})
         return {
@@ -65,7 +66,7 @@ def get_weather(lat: float, lng: float) -> dict:
         }
     except Exception as e:
         print("Open-Meteo Error:", e)
-        return {"temperature": 25, "humidity": 60, "precipitation": 0, "wind_speed": 5}
+        return {"temperature": 1000, "humidity": 1000, "precipitation": -100, "wind_speed": 12435}
 
 # =====================================================
 # AMBEE DISASTER RISK
