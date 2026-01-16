@@ -2,145 +2,209 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
-import re
+from typing import Dict, Any
+from math import radians, cos, sin, asin, sqrt
 from datetime import datetime
-from typing import Dict, Any, List
 
+# =====================================================
+# APP SETUP
+# =====================================================
 app = FastAPI(title="Disaster Early Warning API")
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# =====================================================
+# API KEYS (SET IN RAILWAY / ENV)
+# =====================================================
 AMBEE_KEY = os.getenv("AMBEE_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+# =====================================================
+# STATE COORDINATES (ADD MORE IF NEEDED)
+# =====================================================
 STATE_COORDS = {
-    "Assam": (26.2006, 92.9378),
+    "Assam": (26.2006, 92.9376),
     "Delhi": (28.6139, 77.2090),
     "Maharashtra": (19.7515, 75.7139),
-    "Manipur": (24.6633, 93.906)
-
+    "Manipur": (24.6637, 93.9063),
+    "Kerala": (10.8505, 76.2711),
+    "Odisha": (20.9517, 85.0985),
+    "Tamil Nadu": (11.1271, 78.6569),
 }
 
-# ========================================
-# FIXED: 1. AMBEE (Correct endpoint!) [web:147]
-# ========================================
-def get_ambee_disaster_risk(lat: float, lng: float, disaster_type: str) -> Dict[str, Any]:
-    """FIXED Ambee endpoint - by-lat-lng"""
-    try:
-        url = "https://api.ambeedata.com/disasters/latest/by-lat-lng"  # ✅ CORRECT
-        headers = {"x-api-key": AMBEE_KEY}
-        params = {
-            "lat": lat,
-            "lng": lng,
-            "eventType": disaster_type.upper(),  # EQ, FL, TC [web:147]
-            "limit": 5
-        }
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        print(f"Ambee status: {response.status_code}")  # Debug
-        
-        if response.status_code == 200:
-            data = response.json()
-            risk_score = 30.0
-            for event in data.get("data", [])[-3:]:
-                risk_score += event.get("severity", 1) * 20
-            return {
-                "ambee_risk": min(95, risk_score),
-                "recent_events": data.get("data", [])[:2],
-                "disaster_alert": len(data.get("data", [])) > 0
-            }
-        return {"ambee_risk": 30.0, "recent_events": [], "disaster_alert": False}
-    except Exception as e:
-        print(f"Ambee Error: {e}")
-        return {"ambee_risk": 30.0, "recent_events": [], "disaster_alert": False}
+# =====================================================
+# AMBEE EVENT TYPE MAP (CRITICAL FIX)
+# =====================================================
+AMBEE_EVENT_MAP = {
+    "flood": "FL",
+    "earthquake": "EQ",
+    "cyclone": "TC",
+    "landslide": "LS",
+    "wildfire": "WF",
+    "heatwave": None  # Heatwave not in Ambee disasters
+}
 
-# ========================================
-# 2. OPEN-METEO (Already perfect!)
-# ========================================
-def get_open_meteo_weather(lat: float, lng: float) -> Dict[str, Any]:
-    # Your existing function - PERFECT
+# =====================================================
+# DISTANCE CALCULATION (HAVERSINE)
+# =====================================================
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    c = 2 * asin(sqrt(a))
+    return R * c
+
+# =====================================================
+# AMBEE DISASTER RISK (REAL & FILTERED)
+# =====================================================
+def get_ambee_disaster_risk(lat: float, lng: float, disaster_type: str) -> float:
+    event_code = AMBEE_EVENT_MAP.get(disaster_type)
+
+    if not event_code:
+        return 0.0  # Heatwave etc.
+
+    url = "https://api.ambeedata.com/disasters/latest/by-lat-lng"
+    headers = {"x-api-key": AMBEE_KEY}
+    params = {
+        "lat": lat,
+        "lng": lng,
+        "eventType": event_code,
+        "limit": 10
+    }
+
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        if r.status_code != 200:
+            return 0.0
+
+        data = r.json().get("data", [])
+        risk = 0.0
+
+        for event in data:
+            ev_lat = event.get("latitude")
+            ev_lng = event.get("longitude")
+            severity = event.get("severity", 1)
+
+            if ev_lat and ev_lng:
+                distance = haversine(lat, lng, ev_lat, ev_lng)
+                if distance <= 200:  # ONLY nearby events
+                    risk += severity * 20
+
+        return min(90.0, risk)
+
+    except:
+        return 0.0
+
+# =====================================================
+# OPEN-METEO WEATHER (TRUSTED)
+# =====================================================
+def get_weather(lat: float, lng: float) -> Dict[str, float]:
     try:
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
-            "latitude": lat, "longitude": lng,
+            "latitude": lat,
+            "longitude": lng,
             "current": "temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m",
             "timezone": "Asia/Kolkata"
         }
-        response = requests.get(url, params=params, timeout=10)
-        current = response.json()["current"]
+        r = requests.get(url, params=params, timeout=10)
+        c = r.json()["current"]
         return {
-            "temperature": current["temperature_2m"],
-            "humidity": current["relative_humidity_2m"],
-            "precipitation": current["precipitation"],
-            "wind_speed": current["wind_speed_10m"]
+            "temperature": c["temperature_2m"],
+            "humidity": c["relative_humidity_2m"],
+            "precipitation": c["precipitation"],
+            "wind_speed": c["wind_speed_10m"]
         }
     except:
         return {"temperature": 25, "humidity": 60, "precipitation": 0, "wind_speed": 5}
 
-# ========================================
-# FIXED: 3. HF (Simple requests - NO import needed)
-# ========================================
-def get_huggingface_risk(state: str, disaster_type: str, weather: dict) -> float:
-    """FIXED HF - direct requests"""
+# =====================================================
+# WEATHER-BASED RISK (REAL LOGIC)
+# =====================================================
+def weather_risk(weather: dict, disaster: str) -> float:
+    t = weather["temperature"]
+    r = weather["precipitation"]
+    w = weather["wind_speed"]
+
+    if disaster == "flood":
+        return min(80, r * 25)
+    if disaster == "heatwave":
+        return max(0, (t - 38) * 8)
+    if disaster == "cyclone":
+        return min(80, w * 6)
+    if disaster == "landslide":
+        return min(70, r * 20)
+    if disaster == "earthquake":
+        return 40  # baseline seismic risk
+
+    return 0
+
+# =====================================================
+# HUGGINGFACE SEMANTIC CONFIDENCE (OPTIONAL)
+# =====================================================
+def hf_confidence(state: str, disaster: str, weather: dict) -> float:
     try:
         url = "https://api-inference.huggingface.co/models/AventIQ-AI/Bert-Disaster-SOS-Message-Classifier"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        prompt = f"{disaster_type} {state} India emergency: {weather}"
-        
-        response = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=10)
-        print(f"HF status: {response.status_code}")
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result[0]["score"] * 100 if result else 50.0
-        return 50.0
-    except Exception as e:
-        print(f"HF Error: {e}")
-        return 50.0
+        prompt = (
+            f"{disaster} risk in {state}, India. "
+            f"Temp {weather['temperature']}C, "
+            f"Rain {weather['precipitation']}mm, "
+            f"Wind {weather['wind_speed']}kmh."
+        )
+        r = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=10)
+        if r.status_code == 200:
+            return r.json()[0]["score"] * 100
+    except:
+        pass
+    return 50.0
 
-# ========================================
-# MAIN ENDPOINT (Your structure + fixes)
-# ========================================
+# =====================================================
+# MAIN PREDICTION ENDPOINT
+# =====================================================
 @app.get("/predict/{state}")
-async def predict(state: str, disaster_type: str = "flood"):
+async def predict(state: str, disaster_type: str):
     if state not in STATE_COORDS:
-        raise HTTPException(404, f"State '{state}' not found")
-    
+        raise HTTPException(404, "State not found")
+
     lat, lng = STATE_COORDS[state]
-    
-    # All 3 APIs
-    ambee_data = get_ambee_disaster_risk(lat, lng, disaster_type)
-    weather = get_open_meteo_weather(lat, lng)
-    hf_risk = get_huggingface_risk(state, disaster_type, weather)
-    
-    # DYNAMIC RISK (Your formula + weather factor)
-    weather_factor = calculate_weather_factor(weather, disaster_type)
-    final_risk = ambee_data["ambee_risk"] * 0.4 + hf_risk * 0.4 + weather_factor * 0.2
-    
+
+    weather = get_weather(lat, lng)
+    ambee = get_ambee_disaster_risk(lat, lng, disaster_type)
+    weather_score = weather_risk(weather, disaster_type)
+    hf_score = hf_confidence(state, disaster_type, weather)
+
+    final_risk = round(
+        ambee * 0.5 +
+        weather_score * 0.3 +
+        hf_score * 0.2,
+        1
+    )
+
     return {
-        "risk_percentage": round(final_risk, 1),
-        "debug": {
-            "ambee": round(ambee_data["ambee_risk"], 1),
-            "hf": round(hf_risk, 1),
-            "weather_factor": round(weather_factor, 1)
-        },
+        "state": state,
         "disaster_type": disaster_type,
+        "risk_percentage": final_risk,
         "weather": weather,
-        "status": "✅ ALL APIs LIVE"
+        "confidence": round(hf_score / 100, 2),
+        "details": {
+            "ambee": round(ambee, 1),
+            "weather_factor": round(weather_score, 1),
+            "hf": round(hf_score, 1),
+            "calculation_time": datetime.now().isoformat()
+        }
     }
 
-def calculate_weather_factor(weather: dict, disaster_type: str) -> float:
-    precip = weather["precipitation"]
-    temp = weather["temperature"]
-    if disaster_type == "flood": return min(80, precip * 20 + (100-weather["humidity"]))
-    if disaster_type == "earthquake": return 40
-    if disaster_type == "heatwave": return max(0, (temp-38)*8)
-    return 30
-
+# =====================================================
+# HEALTH CHECK
+# =====================================================
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "fix_applied": "Ambee+HF endpoints"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    return {"status": "healthy"}
