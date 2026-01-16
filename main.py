@@ -17,7 +17,7 @@ STATE_COORDS = {
     "Assam": (26.2006, 92.9378),
     "Delhi": (28.6139, 77.2090),
     "Maharashtra": (19.7515, 75.7139),
-    "Manipur": (24.6633, 93.906
+    "Manipur": (24.6633, 93.906)
 
 STATE_COORDS = {
     "Assam": (26.2006, 92.9378),
